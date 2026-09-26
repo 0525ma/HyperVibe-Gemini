@@ -305,9 +305,8 @@ final class VoiceDictationCoordinator {
         historyAppProfiles = appProfiles.filter { $0.key != "default" }
     }
 
-    /// Keeps one no-audio transcription socket warm for every selectable output mode. This removes
-    /// DNS/TLS/session setup from the physical press path even immediately after a Layer switch;
-    /// 15-second pings keep the sockets alive without sending microphone data.
+    /// Prewarms only the selected Streaming route. Final uses a bounded REST request after release;
+    /// 15-second pings keep the one Live socket alive without sending microphone data.
     func configure(_ settings: Config.DictationSettings,
                    prewarmModes: Set<Config.DictationOutputMode>? = nil,
                    forceReconnect: Bool = false) {
@@ -538,7 +537,7 @@ final class VoiceDictationCoordinator {
             guard Self.selectionCredentialIsCached(session.settings) else {
                 let message = session.settings.selectionEditProvider == .deepSeek
                     ? L("DeepSeek API Key is missing · add and test it in Settings → Voice")
-                    : VoiceAPIError.missingGeminiKeyMessage
+                    : VoiceAPIError.missingOpenAIKeyMessage
                 rejectVisibleSession(session, message: message)
                 return
             }
@@ -580,6 +579,7 @@ final class VoiceDictationCoordinator {
     }
 
     private func activateRealtime(_ session: Session) {
+        guard session.settings.outputMode == .streaming else { return }
         guard active?.id == session.id, session.realtimeTask == nil else { return }
         let settings = session.settings
         let id = session.id
@@ -964,6 +964,13 @@ final class VoiceDictationCoordinator {
         // Reject only actual emptiness. Quiet speech can have very low RMS and must reach the model.
         guard audio.frameCount >= VoiceAudioCaptureSession.outputSampleRate / 10,
               audio.meanSquare > 1e-12 else { throw VoiceTranscriptionError.invalidAudio }
+        if session.settings.outputMode == .final {
+            return try await transcription.transcribeFinal(
+                audio, model: session.settings.finalModel,
+                languageHints: session.settings.languageHints,
+                dictionary: session.settings.dictionary
+            )
+        }
         do {
             try await session.pumpTask?.value
             guard let live = try await session.realtimeTask?.value else {

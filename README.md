@@ -314,15 +314,15 @@ There are two deliberately different output paths:
 
 The side button can choose a different route on every configured Layer. `existing` leaves that
 Layer's ordinary `button.siri` binding completely untouched, while `final` and `streaming` select
-the two native paths above. HyperVibe keeps at most one warm Realtime session per native path—not
-one per Layer—so even a ten-Layer configuration uses at most two prepared sockets and switching
-Layers does not put a fresh TLS/session handshake on the next press.
+the two native paths above. Final mode sends one bounded transcription request after release;
+only the selected Streaming mode keeps a Live connection warm. This avoids spending Live request
+quota while the user is dictating in Final mode.
 
 The capture path automatically prefers fresh Siri Remote audio when the Full Setup microphone stack
 is available, then falls back to the Mac's built-in microphone. It locks onto the first viable source
 after a short pre-roll so source probing does not continue to consume work during the utterance.
-Audio conversion is allocation-light, HTTP/TLS and the Realtime WebSocket are pre-warmed before the
-next press, and credentials are cached before the input hot path.
+Audio conversion is allocation-light, the Streaming WebSocket is pre-warmed when selected, and
+credentials are cached before the input hot path.
 
 Text delivery first targets the control that was focused when the press began. Ordinary Final Voice
 uses a guarded compatibility paste, then direct Accessibility and Unicode paths, and finally copies

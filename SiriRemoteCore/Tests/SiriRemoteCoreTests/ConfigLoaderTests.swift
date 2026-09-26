@@ -224,7 +224,7 @@ final class ConfigLoaderTests: XCTestCase {
         XCTAssertEqual(voice.resolvedOutputMode(for: "L2"), .final)
         XCTAssertEqual(voice.resolvedOutputMode(for: "UNSPECIFIED"), .final)
         XCTAssertEqual(voice.outputModesToPrewarm(layerIDs: ["BASE", "L1", "L2"]),
-                       Set([.final, .streaming]))
+                       Set<Config.DictationOutputMode>())
         XCTAssertEqual(voice.resolvedSettings(for: "L1")?.outputMode, .final)
 
         var switched = voice
@@ -232,6 +232,9 @@ final class ConfigLoaderTests: XCTestCase {
         XCTAssertEqual(switched.activeMode, .external)
         XCTAssertTrue(switched.layerModes.isEmpty)
         XCTAssertNil(switched.resolvedOutputMode(for: "L2"))
+        XCTAssertTrue(switched.outputModesToPrewarm(layerIDs: ["L2"]).isEmpty)
+        switched.selectMode(.streaming)
+        XCTAssertEqual(switched.outputModesToPrewarm(layerIDs: ["L2"]), [.streaming])
     }
 
     func testPartialDictationBlockMigratesWithCurrentDefaults() throws {

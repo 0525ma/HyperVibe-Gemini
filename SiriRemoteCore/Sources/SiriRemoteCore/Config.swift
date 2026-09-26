@@ -427,13 +427,13 @@ public struct Config: Equatable {
             return activeMode.outputMode
         }
 
-        /// Keep both native transports warm even while External is selected. A mode switch is a
-        /// control-plane event and the next side-button hold must not pay a DNS/TLS/WebSocket
-        /// handshake. There are still only two sessions regardless of the number of Layers.
+        /// Final mode uses one bounded REST request after release and needs no Live socket.
+        /// Only prewarm the selected streaming mode; idle sockets must not spend a project's
+        /// scarce Live request quota or retry endlessly while the user is dictating in Final mode.
         public func outputModesToPrewarm(layerIDs: [String]) -> Set<DictationOutputMode> {
             _ = layerIDs
-            guard enabled else { return [] }
-            return Set(DictationOutputMode.allCases)
+            guard enabled, activeMode == .streaming else { return [] }
+            return [.streaming]
         }
 
         /// Freeze the selected global choice into a session-local settings value. A mode switch

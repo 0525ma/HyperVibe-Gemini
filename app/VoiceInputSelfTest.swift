@@ -273,15 +273,19 @@ enum VoiceInputSelfTest {
                && globalVoice.resolvedOutputMode(for: "L2") == nil,
                "External Voice leaves every Layer on the configured side-button action")
         expect(globalVoice.outputModesToPrewarm(layerIDs: ["BASE", "L1", "L2"])
-               == Set([.final, .streaming]),
-               "both native global routes stay warm while External is selected")
+               .isEmpty,
+               "External Voice leaves cloud sessions closed")
         globalVoice.selectMode(.final)
+        expect(globalVoice.outputModesToPrewarm(layerIDs: ["BASE"]).isEmpty,
+               "Final Voice uses bounded transcription without an idle Live socket")
         expect(globalVoice.resolvedOutputMode(for: nil) == .final
                && globalVoice.resolvedOutputMode(for: "L1") == .final
                && globalVoice.resolvedOutputMode(for: "L2") == .final
                && globalVoice.layerModes.isEmpty,
                "Final Voice is global and selecting it retires legacy per-Layer overrides")
         globalVoice.selectMode(.streaming)
+        expect(globalVoice.outputModesToPrewarm(layerIDs: ["BASE"]) == [.streaming],
+               "only the selected streaming route prewarms a Live socket")
         expect(globalVoice.resolvedSettings(for: "L2")?.outputMode == .streaming
                && globalVoice.resolvedSettings(for: "L1")?.outputMode == .streaming,
                "press-local settings freeze the selected global output mode")
