@@ -276,8 +276,8 @@ public struct Config: Equatable {
             activeMode: DictationMode? = nil,
             outputMode: DictationOutputMode = .final,
             layerModes: [String: DictationLayerMode] = [:],
-            finalModel: String = "gpt-transcribe",
-            streamingModel: String = "gpt-live-transcribe",
+            finalModel: String = "gemini-3.5-transcribe",
+            streamingModel: String = "gemini-3.5-transcribe-live",
             languageHints: [String] = ["zh", "en"],
             cleanupProvider: DictationCleanupProvider = .deepSeek,
             selectionEditingEnabled: Bool = true,
@@ -350,6 +350,12 @@ public struct Config: Equatable {
                 ?? defaults.finalModel
             streamingModel = try container.decodeIfPresent(String.self, forKey: .streamingModel)
                 ?? defaults.streamingModel
+            // Existing installations persist OpenAI model names. Migrate those names when the
+            // transcription backend changes; keep user-selected Gemini model names intact.
+            if finalModel == "gpt-transcribe" { finalModel = defaults.finalModel }
+            if streamingModel == "gpt-live-transcribe" {
+                streamingModel = defaults.streamingModel
+            }
             languageHints = try container.decodeIfPresent([String].self, forKey: .languageHints)
                 ?? defaults.languageHints
             cleanupProvider = try container.decodeIfPresent(

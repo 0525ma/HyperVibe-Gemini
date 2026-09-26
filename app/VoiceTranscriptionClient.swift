@@ -2,9 +2,7 @@
 //  VoiceTranscriptionClient.swift
 //  HyperVibe
 //
-//  OpenAI's two intentionally separate speech paths:
-//    - bounded/final: gpt-transcribe over /v1/audio/transcriptions
-//    - live/streaming: gpt-live-transcribe over the Realtime transcription WebSocket
+//  Gemini's bounded generateContent and Live transcription paths.
 //
 
 import Foundation
@@ -19,7 +17,7 @@ enum VoiceTranscriptionError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .missingCredential: return L("No OpenAI API key is saved.")
+        case .missingCredential: return L("No Gemini API key is saved.")
         case .invalidAudio: return L("No usable speech was recorded.")
         case .invalidResponse: return L("The transcription service returned an invalid response.")
         case .service(let message): return message
@@ -35,7 +33,7 @@ final class VoiceTranscriptionClient {
 
     init() {
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 20
+        configuration.timeoutIntervalForRequest = 35
         configuration.timeoutIntervalForResource = 45
         // Voice input is interactive. Waiting silently for connectivity is worse than returning a
         // useful failure immediately, and a later press can use the coordinator's fresh prewarm.
@@ -57,42 +55,44 @@ final class VoiceTranscriptionClient {
         languageHints: [String],
         dictionary: [Config.DictationTerm]
     ) async throws -> String {
-        guard let key = VoiceCredentialStore.read(.openAI) else {
+        guard let key = VoiceCredentialStore.read(.gemini) else {
             throw VoiceTranscriptionError.missingCredential
         }
         guard audio.frameCount >= audio.sampleRate / 10, !audio.pcm16.isEmpty else {
             throw VoiceTranscriptionError.invalidAudio
         }
 
-        let boundary = "HyperVibe-\(UUID().uuidString)"
-        var body = MultipartBody(boundary: boundary)
-        body.addField(name: "model", value: model)
-        body.addField(name: "response_format", value: "json")
-        for language in Self.normalizedLanguageHints(languageHints) {
-            body.addField(name: "languages[]", value: language)
+        let name = model.replacingOccurrences(of: "models/", with: "")
+        guard name.range(of: #"^[A-Za-z0-9._-]+$"#, options: .regularExpression) != nil else {
+            throw VoiceTranscriptionError.invalidResponse
         }
-        for keyword in Self.normalizedKeywords(dictionary) {
-            body.addField(name: "keywords[]", value: keyword)
-        }
-        let prompt = Self.contextPrompt(dictionary)
-        if !prompt.isEmpty { body.addField(name: "prompt", value: prompt) }
-        body.addFile(name: "file", filename: "hypervibe-dictation.wav",
-                     contentType: "audio/wav", data: WAVEncoder.encode(audio))
-
-        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/audio/transcriptions")!)
+        let transcriptionConfig: [String: Any] = [
+            "languageCodes": Self.geminiLanguageHints(languageHints),
+            "customVocabulary": Array(Self.normalizedKeywords(dictionary).prefix(100))
+        ]
+        let payload: [String: Any] = [
+            "contents": [["parts": [["inlineData": [
+                "mimeType": "audio/wav", "data": WAVEncoder.encode(audio).base64EncodedString()
+            ]]]]],
+            "generationConfig": ["audioTranscriptionConfig": transcriptionConfig]
+        ]
+        var request = URLRequest(url: URL(string:
+            "https://generativelanguage.googleapis.com/v1beta/models/\(name):generateContent")!)
         request.httpMethod = "POST"
-        request.timeoutInterval = 25
-        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        request.setValue("multipart/form-data; boundary=\(boundary)",
-                         forHTTPHeaderField: "Content-Type")
-        request.httpBody = body.finish()
+        request.timeoutInterval = 35
+        request.setValue(key, forHTTPHeaderField: "x-goog-api-key")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
         let (data, response) = try await session.data(for: request)
         try Self.validate(response: response, data: data)
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let text = root["text"] as? String else {
+              let candidates = root["candidates"] as? [[String: Any]],
+              let content = candidates.first?["content"] as? [String: Any],
+              let parts = content["parts"] as? [[String: Any]] else {
             throw VoiceTranscriptionError.invalidResponse
         }
+        let text = parts.compactMap { $0["text"] as? String }.joined()
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -105,7 +105,7 @@ final class VoiceTranscriptionClient {
         onPreview: @escaping (String) async -> Void,
         onDrained: @escaping () async -> Void
     ) async throws -> VoiceRealtimeTranscriptionSession {
-        guard let key = VoiceCredentialStore.read(.openAI) else {
+        guard let key = VoiceCredentialStore.read(.gemini) else {
             // No receive loop will be created, so close the callback barrier here. The router
             // latches an early drain until the physical press attaches its handlers.
             await onDrained()
@@ -116,7 +116,7 @@ final class VoiceTranscriptionClient {
             urlSession: realtimeSession,
             model: model,
             minimalDelay: minimalDelay,
-            languages: Self.normalizedLanguageHints(languageHints),
+            languages: Self.geminiLanguageHints(languageHints),
             keywords: Self.normalizedKeywords(dictionary),
             prompt: Self.contextPrompt(dictionary),
             onDelta: onDelta,
@@ -128,6 +128,16 @@ final class VoiceTranscriptionClient {
     static func normalizedLanguageHints(_ raw: [String]) -> [String] {
         unique(raw.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             .filter { !$0.isEmpty })
+    }
+
+    static func geminiLanguageHints(_ raw: [String]) -> [String] {
+        normalizedLanguageHints(raw).compactMap { hint in
+            switch hint {
+            case "zh", "zh-cn", "zh-hans": return "cmn-Hans-CN"
+            case "en": return "en-US"
+            default: return hint.contains("-") ? hint : nil
+            }
+        }
     }
 
     static func normalizedKeywords(_ dictionary: [Config.DictationTerm]) -> [String] {
@@ -180,6 +190,7 @@ final class VoiceTranscriptionClient {
 actor RealtimeTranscriptState {
     private var ready = false
     private var deltas = ""
+    private var streamEnded = false
     private var completed: String?
     private var failure: String?
     private var terminalError: VoiceTranscriptionError?
@@ -193,46 +204,46 @@ actor RealtimeTranscriptState {
     func apply(_ data: Data) throws -> (
         delta: String?, preview: String?, didComplete: Bool
     ) {
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = json["type"] as? String else {
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw VoiceTranscriptionError.invalidResponse
         }
-        switch type {
-        case "session.updated", "transcription_session.updated":
+        if json["setupComplete"] != nil {
             ready = true
             resolveReadyWaiter(.success(()))
             return (nil, nil, false)
-        case "conversation.item.input_audio_transcription.delta":
-            let delta = json["delta"] as? String ?? ""
-            deltas.append(delta)
-            return (delta.isEmpty ? nil : delta, deltas, false)
-        case "conversation.item.input_audio_transcription.completed":
-            // Preserve the server's exact committed text. Streaming deltas may already have
-            // inserted leading/trailing whitespace; trimming here makes strict suffix
-            // reconciliation fail and can copy a duplicate authoritative transcript.
-            let text = json["transcript"] as? String ?? deltas
-            completed = text
-            resolveResultWaiter(.success(text))
-            return (nil, text, true)
-        case "conversation.item.input_audio_transcription.failed", "error":
-            let message: String
-            if let error = json["error"] as? [String: Any] {
-                message = error["message"] as? String
-                    ?? error["type"] as? String
-                    ?? L("Realtime transcription failed.")
-            } else {
-                message = json["message"] as? String ?? L("Realtime transcription failed.")
-            }
+        }
+        if let error = json["error"] as? [String: Any] {
+            let message = error["message"] as? String ?? L("Realtime transcription failed.")
             failure = message
             let error = VoiceTranscriptionError.service(message)
             terminalError = error
             resolveReadyWaiter(.failure(error))
             resolveResultWaiter(.failure(error))
             throw error
-        default:
+        }
+        guard let content = json["serverContent"] as? [String: Any] else {
             return (nil, nil, false)
         }
+        if let interim = content["interimInputTranscription"] as? [String: Any],
+           let text = interim["text"] as? String {
+            return (nil, deltas + text, false)
+        }
+        if let final = content["inputTranscription"] as? [String: Any],
+           let text = final["text"] as? String, !text.isEmpty {
+            // Gemini interim hypotheses can revise words. Only finalized segments enter the
+            // editor; speculative words stay in the temporary preview.
+            let delta = deltas.isEmpty ? text : " " + text
+            deltas += delta
+            if streamEnded {
+                completed = deltas
+                resolveResultWaiter(.success(deltas))
+            }
+            return (delta, deltas, streamEnded)
+        }
+        return (nil, nil, false)
     }
+
+    func markStreamEnded() { streamEnded = true }
 
     func markFailure(_ message: String) {
         if failure == nil { failure = message }
@@ -380,6 +391,7 @@ final class VoiceRealtimeTranscriptionSession {
     private var receiveTask: Task<Void, Never>?
     private let closeLock = NSLock()
     private var closed = false
+    private var activityStarted = false
 
     private init(webSocket: URLSessionWebSocketTask, state: RealtimeTranscriptState) {
         self.webSocket = webSocket
@@ -398,11 +410,11 @@ final class VoiceRealtimeTranscriptionSession {
         onPreview: @escaping (String) async -> Void,
         onDrained: @escaping () async -> Void
     ) async throws -> VoiceRealtimeTranscriptionSession {
-        var components = URLComponents(string: "wss://api.openai.com/v1/realtime")!
-        components.queryItems = [URLQueryItem(name: "intent", value: "transcription")]
+        var components = URLComponents(string:
+            "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent")!
+        components.queryItems = [URLQueryItem(name: "key", value: apiKey)]
         var request = URLRequest(url: components.url!)
         request.timeoutInterval = 15
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
         let socket = urlSession.webSocketTask(with: request)
         let state = RealtimeTranscriptState()
@@ -428,7 +440,9 @@ final class VoiceRealtimeTranscriptionSession {
             } catch is CancellationError {
                 await state.markCancelled()
             } catch {
-                await state.markFailure(error.localizedDescription)
+                // A WebSocket URL carries the Gemini key in its query per the Live API contract.
+                // Never propagate a transport description that might include that URL.
+                await state.markFailure(VoiceAPIError.userFacingMessage(for: error))
             }
             if Task.isCancelled || live == nil { await state.markCancelled() }
             // One terminal barrier for success, transport failure and cancellation. Because every
@@ -437,27 +451,20 @@ final class VoiceRealtimeTranscriptionSession {
             await onDrained()
         }
 
-        var transcription: [String: Any] = ["model": model]
-        if !languages.isEmpty { transcription["languages"] = languages }
-        if !keywords.isEmpty { transcription["keywords"] = keywords }
-        if !prompt.isEmpty { transcription["prompt"] = prompt }
-        // `delay: minimal` is a tunable-latency feature of gpt-live-transcribe. The high-accuracy
-        // gpt-transcribe route supports committed Realtime turns but rejects this live-only field;
-        // sending it there caused a hidden reconnect loop instead of a reusable warm Final socket.
-        if minimalDelay { transcription["delay"] = "minimal" }
-        let update: [String: Any] = [
-            "type": "session.update",
-            "session": [
-                "type": "transcription",
-                "audio": [
-                    "input": [
-                        "format": ["type": "audio/pcm", "rate": 24_000],
-                        "transcription": transcription,
-                        "turn_detection": NSNull(),
-                    ],
-                ],
-            ],
-        ]
+        let name = model.replacingOccurrences(of: "models/", with: "")
+        guard name.range(of: #"^[A-Za-z0-9._-]+$"#, options: .regularExpression) != nil else {
+            throw VoiceTranscriptionError.invalidResponse
+        }
+        var transcription: [String: Any] = ["languageCodes": languages]
+        if !keywords.isEmpty { transcription["customVocabulary"] = Array(keywords.prefix(100)) }
+        // Final cleanup is a separate stage; keep recognition literal in both modes.
+        transcription["mode"] = "VERBATIM"
+        let update: [String: Any] = ["setup": [
+            "model": "models/\(name)",
+            "generationConfig": ["responseModalities": ["TEXT"]],
+            "realtimeInputConfig": ["automaticActivityDetection": ["disabled": true]],
+            "inputAudioTranscription": transcription
+        ]]
         do {
             try await socket.send(.string(try jsonString(update)))
             try await state.waitUntilReady(timeoutNanoseconds: 4_000_000_000)
@@ -473,6 +480,10 @@ final class VoiceRealtimeTranscriptionSession {
 
     func append(_ pcm16: Data) async throws {
         guard !pcm16.isEmpty, !isClosed else { return }
+        if !activityStarted {
+            try await webSocket.send(.string(#"{"realtimeInput":{"activityStart":{}}}"#))
+            activityStarted = true
+        }
         // Base64's alphabet is JSON-string safe. Building this fixed envelope directly avoids a
         // dictionary and JSONSerialization pass for every 20 ms audio packet (50 times/second).
         let message = Self.audioAppendMessage(pcm16)
@@ -483,13 +494,15 @@ final class VoiceRealtimeTranscriptionSession {
     }
 
     static func audioAppendMessage(_ pcm16: Data) -> String {
-        #"{"type":"input_audio_buffer.append","audio":""#
-            + pcm16.base64EncodedString() + #""}"#
+        #"{"realtimeInput":{"audio":{"data":""#
+            + pcm16.base64EncodedString() + #"","mimeType":"audio/pcm;rate=24000"}}}"#
     }
 
     func finish() async throws -> String {
         guard !isClosed else { throw VoiceTranscriptionError.cancelled }
-        try await webSocket.send(.string(#"{"type":"input_audio_buffer.commit"}"#))
+        guard activityStarted else { throw VoiceTranscriptionError.invalidAudio }
+        try await webSocket.send(.string(#"{"realtimeInput":{"activityEnd":{}}}"#))
+        await state.markStreamEnded()
         do {
             let text = try await state.waitForResult(timeoutNanoseconds: 15_000_000_000)
             close(code: .normalClosure)

@@ -30,6 +30,7 @@ struct SettingsView: View {
 
     @State private var saveErrorDetail: String?
     @State private var openAIKeyDraft = ""
+    @State private var geminiKeyDraft = ""
     @State private var deepSeekKeyDraft = ""
     @State private var credentialError: String?
     @State private var dictionaryEditor: DictionaryEditorRequest?
@@ -294,8 +295,16 @@ struct SettingsView: View {
 
             Section {
                 credentialCard(
-                    title: "OpenAI", subtitle: L("Required for transcription"),
+                    title: "Gemini", subtitle: L("Required for transcription"),
                     icon: "waveform.badge.mic", tint: .green,
+                    kind: .gemini, draft: $geminiKeyDraft,
+                    hasKey: voiceCredentials.hasGeminiKey,
+                    state: voiceCredentials.geminiConnection
+                )
+                Divider()
+                credentialCard(
+                    title: "OpenAI", subtitle: L("Optional for OpenAI text cleanup and selection editing"),
+                    icon: "wand.and.stars", tint: .orange,
                     kind: .openAI, draft: $openAIKeyDraft,
                     hasKey: voiceCredentials.hasOpenAIKey,
                     state: voiceCredentials.openAIConnection
@@ -311,8 +320,9 @@ struct SettingsView: View {
             } header: {
                 Text(L("API Credentials"))
             } footer: {
+                Text(L("Gemini Key is saved in the current-user-only credentials file; existing OpenAI and DeepSeek keys keep their previous storage backend."))
                 if voiceCredentials.storageBackend == .keychain {
-                    Text(L("Keys are stored in the macOS Keychain with this-device-only protection. On first save, choose Always Allow once for HyperVibe's fixed credential helper; normal App updates will not ask again. Keys are never written to config.jsonc, logs, the app bundle, or Git."))
+                    Text(L("Existing OpenAI and DeepSeek keys are stored in the macOS Keychain with this-device-only protection. On first save, choose Always Allow once for HyperVibe's fixed credential helper; normal App updates will not ask again. Keys are never written to config.jsonc, logs, the app bundle, or Git."))
                 } else if voiceCredentials.storageBackend == .localJSON {
                     Text(L("Keys are saved as plaintext in a current-user-only credentials.json file for this public beta. Only HyperVibe Settings provides a supported way to write it. Keys are never written to config.jsonc, logs, the app bundle, or Git."))
                 } else {
@@ -443,12 +453,12 @@ struct SettingsView: View {
                 DisclosureGroup(L("Model settings")) {
                     VStack(spacing: 10) {
                         LabeledContent(L("Final transcription")) {
-                            TextField("gpt-transcribe",
+                            TextField("gemini-3.5-transcribe",
                                       text: $model.tune.dictation.finalModel)
                                 .textFieldStyle(.roundedBorder).frame(width: 280)
                         }
                         LabeledContent(L("Streaming transcription")) {
-                            TextField("gpt-live-transcribe",
+                            TextField("gemini-3.5-transcribe-live",
                                       text: $model.tune.dictation.streamingModel)
                                 .textFieldStyle(.roundedBorder).frame(width: 280)
                         }

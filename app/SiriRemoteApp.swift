@@ -1510,7 +1510,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             dictation?.finishListening()
         }
         remoteInputHandler?.onNativeDictationMisconfigured = { [weak dictation] in
-            dictation?.reportConfigurationError(VoiceAPIError.missingOpenAIKeyMessage)
+            dictation?.reportConfigurationError(VoiceAPIError.missingGeminiKeyMessage)
         }
         remoteInputHandler?.shouldCopyLastNativeDictationOnDouble = { [weak model] in
             guard let settings = model?.tune.dictation else { return false }

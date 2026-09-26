@@ -350,7 +350,7 @@ final class VoiceDictationCoordinator {
             resetAllPrewarmRetryState()
             return
         }
-        guard VoiceCredentialStore.cachedContains(.openAI) else {
+        guard VoiceCredentialStore.cachedContains(.gemini) else {
             discardAllPreparedRealtime()
             resetAllPrewarmRetryState()
             return
@@ -373,7 +373,7 @@ final class VoiceDictationCoordinator {
             hasPendingReplacement: pendingReplacement != nil
         )
         guard reentry != .busy else { return .busy }
-        guard VoiceCredentialStore.cachedContains(.openAI) else { return .misconfigured }
+        guard VoiceCredentialStore.cachedContains(.gemini) else { return .misconfigured }
         correctionMonitor.cancel()
 
         let pressedAt = DispatchTime.now().uptimeNanoseconds
@@ -538,7 +538,7 @@ final class VoiceDictationCoordinator {
             guard Self.selectionCredentialIsCached(session.settings) else {
                 let message = session.settings.selectionEditProvider == .deepSeek
                     ? L("DeepSeek API Key is missing · add and test it in Settings → Voice")
-                    : VoiceAPIError.missingOpenAIKeyMessage
+                    : VoiceAPIError.missingGeminiKeyMessage
                 rejectVisibleSession(session, message: message)
                 return
             }
@@ -1201,8 +1201,7 @@ final class VoiceDictationCoordinator {
         settings: Config.DictationSettings,
         router: VoiceRealtimeEventRouter
     ) -> Task<VoiceRealtimeTranscriptionSession, Error> {
-        let model = settings.outputMode == .streaming
-            ? settings.streamingModel : settings.finalModel
+        let model = settings.streamingModel
         return Task { [transcription] in
             try await transcription.openRealtime(
                 model: model,
@@ -1291,7 +1290,7 @@ final class VoiceDictationCoordinator {
     private func startPrewarmIfNeeded() {
         guard active == nil, pendingReplacement == nil else { return }
         guard !configuredPrewarmSettings.isEmpty,
-              VoiceCredentialStore.cachedContains(.openAI) else {
+              VoiceCredentialStore.cachedContains(.gemini) else {
             discardAllPreparedRealtime()
             return
         }
