@@ -273,15 +273,19 @@ enum VoiceInputSelfTest {
                && globalVoice.resolvedOutputMode(for: "L2") == nil,
                "External Voice leaves every Layer on the configured side-button action")
         expect(globalVoice.outputModesToPrewarm(layerIDs: ["BASE", "L1", "L2"])
-               == Set([.final, .streaming]),
-               "both native global routes stay warm while External is selected")
+               .isEmpty,
+               "External Voice leaves cloud sessions closed")
         globalVoice.selectMode(.final)
+        expect(globalVoice.outputModesToPrewarm(layerIDs: ["BASE"]).isEmpty,
+               "Final Voice uses bounded transcription without an idle Live socket")
         expect(globalVoice.resolvedOutputMode(for: nil) == .final
                && globalVoice.resolvedOutputMode(for: "L1") == .final
                && globalVoice.resolvedOutputMode(for: "L2") == .final
                && globalVoice.layerModes.isEmpty,
                "Final Voice is global and selecting it retires legacy per-Layer overrides")
         globalVoice.selectMode(.streaming)
+        expect(globalVoice.outputModesToPrewarm(layerIDs: ["BASE"]) == [.streaming],
+               "only the selected streaming route prewarms a Live socket")
         expect(globalVoice.resolvedSettings(for: "L2")?.outputMode == .streaming
                && globalVoice.resolvedSettings(for: "L1")?.outputMode == .streaming,
                "press-local settings freeze the selected global output mode")
@@ -829,13 +833,22 @@ enum VoiceInputSelfTest {
         let appendJSON = try? JSONSerialization.jsonObject(with: Data(appendEnvelope.utf8))
             as? [String: Any]
         let roundTrippedAudio: Data?
-        if let encoded = appendJSON?["audio"] as? String {
+        let realtimeInput = appendJSON?["realtimeInput"] as? [String: Any]
+        let audioEnvelope = realtimeInput?["audio"] as? [String: Any]
+        if let encoded = audioEnvelope?["data"] as? String {
             roundTrippedAudio = Data(base64Encoded: encoded)
         } else {
             roundTrippedAudio = nil
         }
-        expect(appendJSON?["type"] as? String == "input_audio_buffer.append"
+        expect(audioEnvelope?["mimeType"] as? String == "audio/pcm;rate=24000"
                && roundTrippedAudio == appendProbe, "Realtime audio envelope round-trips")
+
+        let geminiTranscription = Data(
+            #"{"candidates":[{"content":{"parts":[{"audioTranscription":{"text":"这是一段语音转写测试。"}}]}}]}"#.utf8
+        )
+        expect((try? VoiceTranscriptionClient.transcript(from: geminiTranscription))
+               == "这是一段语音转写测试。",
+               "Gemini dedicated transcription reads audioTranscription.text")
 
         let realtimePacket = Data(repeating: 0x5A, count: 960) // one 20 ms PCM16 packet
         let packetStarted = DispatchTime.now().uptimeNanoseconds
@@ -1004,23 +1017,24 @@ enum VoiceInputSelfTest {
         ) == " ", "streaming reconciliation preserves terminal whitespace")
 
         let state = RealtimeTranscriptState()
-        _ = try? await state.apply(Data(#"{"type":"session.updated"}"#.utf8))
+        _ = try? await state.apply(Data(#"{"setupComplete":{}}"#.utf8))
         let first = try? await state.apply(Data(
-            #"{"type":"conversation.item.input_audio_transcription.delta","delta":"你"}"#.utf8
+            #"{"serverContent":{"interimInputTranscription":{"text":"你"}}}"#.utf8
         ))
         let second = try? await state.apply(Data(
-            #"{"type":"conversation.item.input_audio_transcription.delta","delta":"好"}"#.utf8
+            #"{"serverContent":{"interimInputTranscription":{"text":"你好"}}}"#.utf8
         ))
         let directResult = Task {
             try await state.waitForResult(timeoutNanoseconds: 1_000_000_000)
         }
         await Task.yield()
+        await state.markStreamEnded()
         let completed = try? await state.apply(Data(
-            #"{"type":"conversation.item.input_audio_transcription.completed","transcript":" 你好 "}"#.utf8
+            #"{"serverContent":{"inputTranscription":{"text":" 你好 "}}}"#.utf8
         ))
         let assembledResult = await state.result()
         let awaitedResult = try? await directResult.value
-        expect(first?.delta == "你" && second?.preview == "你好"
+        expect(first?.preview == "你" && second?.preview == "你好"
                && completed?.didComplete == true && assembledResult == " 你好 "
                && awaitedResult == " 你好 ",
                "Realtime direct completion and drain barrier preserve committed whitespace")
@@ -1053,7 +1067,7 @@ enum VoiceInputSelfTest {
             try await readyState.waitUntilReady(timeoutNanoseconds: 1_000_000_000)
         }
         await Task.yield()
-        _ = try? await readyState.apply(Data(#"{"type":"session.updated"}"#.utf8))
+        _ = try? await readyState.apply(Data(#"{"setupComplete":{}}"#.utf8))
         let directReadyWorked = (try? await readyWait.value) != nil
 
         let rejectedReadyState = RealtimeTranscriptState()
@@ -1127,7 +1141,7 @@ enum VoiceInputSelfTest {
             switch mode {
             case "final":
                 let text = try await client.transcribeFinal(
-                    audio, model: "gpt-transcribe", languageHints: ["zh", "en"], dictionary: []
+                    audio, model: "gemini-3.5-transcribe", languageHints: ["zh", "en"], dictionary: []
                 )
                 guard !text.isEmpty else { throw VoiceTranscriptionError.invalidResponse }
                 print(String(format: "VOICE_API_TEST PASS mode=final total=%.0fms chars=%d",
@@ -1136,10 +1150,9 @@ enum VoiceInputSelfTest {
             case "streaming", "prewarmed-streaming", "realtime-final", "prewarmed-final":
                 let timing = DeltaTiming()
                 let readyStart = DispatchTime.now().uptimeNanoseconds
-                let usesFinalModel = mode.hasSuffix("final")
                 let live = try await client.openRealtime(
-                    model: usesFinalModel ? "gpt-transcribe" : "gpt-live-transcribe",
-                    minimalDelay: !usesFinalModel,
+                    model: "gemini-3.5-transcribe-live",
+                    minimalDelay: true,
                     languageHints: ["zh", "en"], dictionary: [],
                     onDelta: { delta in if !delta.isEmpty { timing.note() } },
                     onPreview: { _ in },
@@ -1236,28 +1249,28 @@ enum VoiceInputSelfTest {
             }
             return true
         } catch {
-            print("VOICE_API_TEST FAIL mode=\(mode) error=\(error.localizedDescription)")
+            print("VOICE_API_TEST FAIL mode=\(mode) error=\(VoiceAPIError.userFacingMessage(for: error))")
             return false
         }
     }
 
     static func checkCredentialAvailability() -> Bool {
-        let openAI = VoiceCredentialStore.contains(.openAI)
+        let gemini = VoiceCredentialStore.contains(.gemini)
         let deepSeek = VoiceCredentialStore.contains(.deepSeek)
         let started = DispatchTime.now().uptimeNanoseconds
         var cacheHits = 0
-        if openAI && deepSeek {
+        if gemini && deepSeek {
             for _ in 0..<10_000 {
-                if VoiceCredentialStore.contains(.openAI) { cacheHits += 1 }
+                if VoiceCredentialStore.contains(.gemini) { cacheHits += 1 }
                 if VoiceCredentialStore.contains(.deepSeek) { cacheHits += 1 }
             }
         }
         let cacheMilliseconds = milliseconds(started, DispatchTime.now().uptimeNanoseconds)
-        let cacheFast = !openAI || !deepSeek || (cacheHits == 20_000 && cacheMilliseconds < 25)
-        print(String(format: "VOICE_KEY_CHECK %@ openAI=%@ deepSeek=%@ cache20k=%.2fms",
-                     openAI && deepSeek && cacheFast ? "PASS" : "FAIL",
-                     openAI.description, deepSeek.description, cacheMilliseconds))
-        return openAI && deepSeek && cacheFast
+        let cacheFast = !gemini || !deepSeek || (cacheHits == 20_000 && cacheMilliseconds < 25)
+        print(String(format: "VOICE_KEY_CHECK %@ gemini=%@ deepSeek=%@ cache20k=%.2fms",
+                     gemini && deepSeek && cacheFast ? "PASS" : "FAIL",
+                     gemini.description, deepSeek.description, cacheMilliseconds))
+        return gemini && deepSeek && cacheFast
     }
 
     static func decodePCM16WAV(_ data: Data) throws -> VoiceCapturedAudio {

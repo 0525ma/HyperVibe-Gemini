@@ -305,9 +305,8 @@ final class VoiceDictationCoordinator {
         historyAppProfiles = appProfiles.filter { $0.key != "default" }
     }
 
-    /// Keeps one no-audio transcription socket warm for every selectable output mode. This removes
-    /// DNS/TLS/session setup from the physical press path even immediately after a Layer switch;
-    /// 15-second pings keep the sockets alive without sending microphone data.
+    /// Prewarms only the selected Streaming route. Final uses a bounded REST request after release;
+    /// 15-second pings keep the one Live socket alive without sending microphone data.
     func configure(_ settings: Config.DictationSettings,
                    prewarmModes: Set<Config.DictationOutputMode>? = nil,
                    forceReconnect: Bool = false) {
@@ -350,7 +349,7 @@ final class VoiceDictationCoordinator {
             resetAllPrewarmRetryState()
             return
         }
-        guard VoiceCredentialStore.cachedContains(.openAI) else {
+        guard VoiceCredentialStore.cachedContains(.gemini) else {
             discardAllPreparedRealtime()
             resetAllPrewarmRetryState()
             return
@@ -373,7 +372,7 @@ final class VoiceDictationCoordinator {
             hasPendingReplacement: pendingReplacement != nil
         )
         guard reentry != .busy else { return .busy }
-        guard VoiceCredentialStore.cachedContains(.openAI) else { return .misconfigured }
+        guard VoiceCredentialStore.cachedContains(.gemini) else { return .misconfigured }
         correctionMonitor.cancel()
 
         let pressedAt = DispatchTime.now().uptimeNanoseconds
@@ -580,6 +579,7 @@ final class VoiceDictationCoordinator {
     }
 
     private func activateRealtime(_ session: Session) {
+        guard session.settings.outputMode == .streaming else { return }
         guard active?.id == session.id, session.realtimeTask == nil else { return }
         let settings = session.settings
         let id = session.id
@@ -964,6 +964,13 @@ final class VoiceDictationCoordinator {
         // Reject only actual emptiness. Quiet speech can have very low RMS and must reach the model.
         guard audio.frameCount >= VoiceAudioCaptureSession.outputSampleRate / 10,
               audio.meanSquare > 1e-12 else { throw VoiceTranscriptionError.invalidAudio }
+        if session.settings.outputMode == .final {
+            return try await transcription.transcribeFinal(
+                audio, model: session.settings.finalModel,
+                languageHints: session.settings.languageHints,
+                dictionary: session.settings.dictionary
+            )
+        }
         do {
             try await session.pumpTask?.value
             guard let live = try await session.realtimeTask?.value else {
@@ -1201,8 +1208,7 @@ final class VoiceDictationCoordinator {
         settings: Config.DictationSettings,
         router: VoiceRealtimeEventRouter
     ) -> Task<VoiceRealtimeTranscriptionSession, Error> {
-        let model = settings.outputMode == .streaming
-            ? settings.streamingModel : settings.finalModel
+        let model = settings.streamingModel
         return Task { [transcription] in
             try await transcription.openRealtime(
                 model: model,
@@ -1291,7 +1297,7 @@ final class VoiceDictationCoordinator {
     private func startPrewarmIfNeeded() {
         guard active == nil, pendingReplacement == nil else { return }
         guard !configuredPrewarmSettings.isEmpty,
-              VoiceCredentialStore.cachedContains(.openAI) else {
+              VoiceCredentialStore.cachedContains(.gemini) else {
             discardAllPreparedRealtime()
             return
         }

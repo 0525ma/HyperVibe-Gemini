@@ -168,8 +168,8 @@ final class ConfigLoaderTests: XCTestCase {
         XCTAssertFalse(defaults.settings.dictation.enabled)
         XCTAssertEqual(defaults.settings.dictation.activeMode, .final)
         XCTAssertEqual(defaults.settings.dictation.outputMode, .final)
-        XCTAssertEqual(defaults.settings.dictation.finalModel, "gpt-transcribe")
-        XCTAssertEqual(defaults.settings.dictation.streamingModel, "gpt-live-transcribe")
+        XCTAssertEqual(defaults.settings.dictation.finalModel, "gemini-3.5-transcribe")
+        XCTAssertEqual(defaults.settings.dictation.streamingModel, "gemini-3.5-transcribe-live")
         XCTAssertEqual(defaults.settings.dictation.languageHints, ["zh", "en"])
         XCTAssertEqual(defaults.settings.dictation.cleanupProvider, .deepSeek)
         XCTAssertTrue(defaults.settings.dictation.selectionEditingEnabled)
@@ -224,7 +224,7 @@ final class ConfigLoaderTests: XCTestCase {
         XCTAssertEqual(voice.resolvedOutputMode(for: "L2"), .final)
         XCTAssertEqual(voice.resolvedOutputMode(for: "UNSPECIFIED"), .final)
         XCTAssertEqual(voice.outputModesToPrewarm(layerIDs: ["BASE", "L1", "L2"]),
-                       Set([.final, .streaming]))
+                       Set<Config.DictationOutputMode>())
         XCTAssertEqual(voice.resolvedSettings(for: "L1")?.outputMode, .final)
 
         var switched = voice
@@ -232,6 +232,9 @@ final class ConfigLoaderTests: XCTestCase {
         XCTAssertEqual(switched.activeMode, .external)
         XCTAssertTrue(switched.layerModes.isEmpty)
         XCTAssertNil(switched.resolvedOutputMode(for: "L2"))
+        XCTAssertTrue(switched.outputModesToPrewarm(layerIDs: ["L2"]).isEmpty)
+        switched.selectMode(.streaming)
+        XCTAssertEqual(switched.outputModesToPrewarm(layerIDs: ["L2"]), [.streaming])
     }
 
     func testPartialDictationBlockMigratesWithCurrentDefaults() throws {
@@ -245,8 +248,8 @@ final class ConfigLoaderTests: XCTestCase {
         XCTAssertTrue(voice.enabled)
         XCTAssertEqual(voice.activeMode, .streaming) // migrated from the former outputMode field
         XCTAssertEqual(voice.outputMode, .streaming)
-        XCTAssertEqual(voice.finalModel, "gpt-transcribe")
-        XCTAssertEqual(voice.streamingModel, "gpt-live-transcribe")
+        XCTAssertEqual(voice.finalModel, "gemini-3.5-transcribe")
+        XCTAssertEqual(voice.streamingModel, "gemini-3.5-transcribe-live")
         XCTAssertEqual(voice.cleanupProvider, .deepSeek)
         XCTAssertTrue(voice.selectionEditingEnabled)
         XCTAssertEqual(voice.selectionEditProvider, .deepSeek)

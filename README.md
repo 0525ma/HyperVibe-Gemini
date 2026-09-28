@@ -294,7 +294,7 @@ dedicated uninstaller. Development setup and component-level details live in
 
 HyperVibe can also turn a side-button hold directly into text, without asking another dictation app
 to interpret a shortcut. No `pushToTalk` mapping is required: enable **Settings → Voice**, save an
-OpenAI key from the in-App credentials panel, then
+Gemini key from the in-App credentials panel, then
 hold the Siri button for 0.2 seconds and speak. Capture and the cloud session begin on the physical
 press edge, underneath that existing tap/hold decision; a quick tap cancels silently. Releasing the
 button immediately closes the live Voice presentation and finishes the current utterance in the
@@ -302,27 +302,27 @@ background.
 
 There are two deliberately different output paths:
 
-- **Streaming** prioritizes responsiveness. Transcript deltas are inserted as they arrive while the
+- **Streaming** prioritizes responsiveness. Gemini's finalized speech segments are inserted as they arrive while the
   button is still held; the first delta bypasses coalescing, later deltas are batched for at most
   8 ms, and no LLM rewrite is put in the latency path. On a successful release the widget returns
   directly to the current Layer—there are no redundant Transcribing, Inserting, or Inserted cards.
   Clipboard fallback and errors remain visible because those outcomes require attention.
-- **Final** records the complete utterance with `gpt-transcribe`, applies the on-device dictionary,
+- **Final** records the complete utterance with `gemini-3.5-transcribe`, applies the on-device dictionary,
   and can optionally polish wording with a small OpenAI or DeepSeek model. DeepSeek is the default
   cleanup provider because it is materially faster in this workflow; choose `none` for the shortest
   release-to-text path.
 
 The side button can choose a different route on every configured Layer. `existing` leaves that
 Layer's ordinary `button.siri` binding completely untouched, while `final` and `streaming` select
-the two native paths above. HyperVibe keeps at most one warm Realtime session per native path—not
-one per Layer—so even a ten-Layer configuration uses at most two prepared sockets and switching
-Layers does not put a fresh TLS/session handshake on the next press.
+the two native paths above. Final mode sends one bounded transcription request after release;
+only the selected Streaming mode keeps a Live connection warm. This avoids spending Live request
+quota while the user is dictating in Final mode.
 
 The capture path automatically prefers fresh Siri Remote audio when the Full Setup microphone stack
 is available, then falls back to the Mac's built-in microphone. It locks onto the first viable source
 after a short pre-roll so source probing does not continue to consume work during the utterance.
-Audio conversion is allocation-light, HTTP/TLS and the Realtime WebSocket are pre-warmed before the
-next press, and credentials are cached before the input hot path.
+Audio conversion is allocation-light, the Streaming WebSocket is pre-warmed when selected, and
+credentials are cached before the input hot path.
 
 Text delivery first targets the control that was focused when the press began. Ordinary Final Voice
 uses a guarded compatibility paste, then direct Accessibility and Unicode paths, and finally copies
@@ -345,8 +345,9 @@ meter in Final and Streaming, with an adaptive per-hold level reference so chang
 make the waveform huge or tiny. Both the cue and its volume are configurable.
 
 API keys are entered only through HyperVibe Settings and never enter the shareable `config.jsonc`,
-logs, the App bundle, or Git. Certificate-bound builds keep them in the login Keychain through a
-fixed credential helper. Public ad-hoc betas instead keep them as plaintext in a dedicated
+logs, the App bundle, or Git. The new Gemini key uses the current-user-only credential file so the
+fixed Keychain helper and its existing access grants remain unchanged. Existing OpenAI and DeepSeek
+keys keep their previous backend. Public ad-hoc betas keep all keys as plaintext in a dedicated
 `~/Library/Application Support/HyperVibe/Credentials/credentials.json` file with mode `0600` inside
 a mode-`0700` directory. This protects against accidental sharing, not malware already running as
 the signed-in user. Every non-secret behavior remains JSON-controlled under `settings.dictation`:
@@ -357,8 +358,8 @@ the signed-in user. Every non-secret behavior remains JSON-controlled under `set
   "activeMode": "final", // external | final | streaming; global on every Layer
   "outputMode": "final", // legacy downgrade compatibility
   "layerModes": {},      // deprecated compatibility; activeMode is authoritative
-  "finalModel": "gpt-transcribe",
-  "streamingModel": "gpt-live-transcribe",
+  "finalModel": "gemini-3.5-transcribe",
+  "streamingModel": "gemini-3.5-transcribe-live",
   "languageHints": ["zh", "en"],
   "cleanupProvider": "deepseek", // none | openai | deepseek; Final mode only
   "selectionEditingEnabled": true, // selected text + spoken instruction → strict AX replacement

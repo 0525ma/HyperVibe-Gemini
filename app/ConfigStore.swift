@@ -156,8 +156,8 @@ enum ConfigStore {
           // Legacy downgrade compatibility; activeMode above is authoritative.
           "outputMode": "final",
           "layerModes": {},
-          "finalModel": "gpt-transcribe",
-          "streamingModel": "gpt-live-transcribe",
+          "finalModel": "gemini-3.5-transcribe",
+          "streamingModel": "gemini-3.5-transcribe-live",
           "languageHints": ["zh", "en"],
           "cleanupProvider": "deepseek", // none | openai | deepseek; Final mode only
           "selectionEditingEnabled": true, // AX-first selection rewrite; guarded Copy probe for custom editors

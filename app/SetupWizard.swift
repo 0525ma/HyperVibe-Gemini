@@ -155,11 +155,25 @@ final class SetupModel: ObservableObject {
     func requestAccessibility() {
         SystemReadiness.requestAccessibility()
         scheduleRefresh()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self else { return }
+            self.refresh()
+            if !self.readiness.accessibilityGranted {
+                SystemReadiness.openAccessibilitySettings()
+            }
+        }
     }
 
     func requestInputMonitoring() {
         SystemReadiness.requestInputMonitoring()
         scheduleRefresh()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self else { return }
+            self.refresh()
+            if !self.readiness.inputMonitoringGranted {
+                SystemReadiness.openInputMonitoringSettings()
+            }
+        }
     }
 
     func requestMicrophone() {

@@ -80,8 +80,8 @@
       "activeMode": "final", // external | final | streaming; global on every Layer
       "outputMode": "final", // legacy downgrade compatibility
       "layerModes": {}, // deprecated compatibility; routing no longer reads this
-      "finalModel": "gpt-transcribe",
-      "streamingModel": "gpt-live-transcribe",
+      "finalModel": "gemini-3.5-transcribe",
+      "streamingModel": "gemini-3.5-transcribe-live",
       "languageHints": ["zh", "en"],
       "cleanupProvider": "deepseek", // none | openai | deepseek (Final mode only)
       "selectionEditingEnabled": true, // strict Accessibility selection rewrite

@@ -12,11 +12,13 @@ import Foundation
 import Security
 
 enum VoiceCredentialKind: String, CaseIterable {
+    case gemini = "gemini-api-key"
     case openAI = "openai-api-key"
     case deepSeek = "deepseek-api-key"
 
     var displayName: String {
         switch self {
+        case .gemini: return "Gemini"
         case .openAI: return "OpenAI"
         case .deepSeek: return "DeepSeek"
         }
@@ -71,7 +73,7 @@ enum VoiceCredentialStore {
     static func preload(_ completion: @escaping () -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
             _ = resolveBackend()
-            _ = read(.openAI) // one batch request loads both OpenAI and DeepSeek
+            _ = read(.gemini) // one batch request loads all supported credentials
             DispatchQueue.main.async(execute: completion)
         }
     }
@@ -134,7 +136,9 @@ enum VoiceCredentialStore {
         guard !clean.isEmpty else {
             throw VoiceCredentialError.empty
         }
-        switch resolveBackend() {
+        // Keep the fixed Keychain broker binary unchanged: its CDHash owns existing ACL grants.
+        // The new Gemini credential uses the same mode-0600 beta store as ad-hoc builds.
+        switch kind == .gemini ? Backend.localJSON : resolveBackend() {
         case .keychain:
             let status = VoiceCredentialBrokerClient.shared.save(
                 account: kind.rawValue, value: Data(clean.utf8)
@@ -157,7 +161,7 @@ enum VoiceCredentialStore {
     }
 
     static func remove(_ kind: VoiceCredentialKind) throws {
-        if resolveBackend() == .keychain {
+        if kind != .gemini && resolveBackend() == .keychain {
             let status = VoiceCredentialBrokerClient.shared.remove(account: kind.rawValue)
             guard status == errSecSuccess || status == errSecItemNotFound else {
                 throw VoiceCredentialError.keychain(status)
@@ -297,6 +301,7 @@ final class LocalJSONCredentialStore {
 private extension VoiceCredentialKind {
     var environmentName: String {
         switch self {
+        case .gemini: return "GEMINI_API_KEY"
         case .openAI: return "OPENAI_API_KEY"
         case .deepSeek: return "DEEPSEEK_API_KEY"
         }
@@ -476,8 +481,10 @@ enum VoiceCredentialConnectionState: Equatable {
 /// Settings-facing status only. Raw keys never become @Published values and therefore never enter
 /// SwiftUI diagnostics or view descriptions.
 final class VoiceCredentialModel: ObservableObject {
+    @Published private(set) var hasGeminiKey = false
     @Published private(set) var hasOpenAIKey = false
     @Published private(set) var hasDeepSeekKey = false
+    @Published private(set) var geminiConnection: VoiceCredentialConnectionState = .loading
     @Published private(set) var openAIConnection: VoiceCredentialConnectionState = .loading
     @Published private(set) var deepSeekConnection: VoiceCredentialConnectionState = .loading
     @Published private(set) var storageBackend: VoiceCredentialStore.Backend?
@@ -490,6 +497,7 @@ final class VoiceCredentialModel: ObservableObject {
     }
 
     func refresh() {
+        hasGeminiKey = VoiceCredentialStore.cachedContains(.gemini)
         hasOpenAIKey = VoiceCredentialStore.cachedContains(.openAI)
         hasDeepSeekKey = VoiceCredentialStore.cachedContains(.deepSeek)
         storageBackend = VoiceCredentialStore.cachedBackend
@@ -498,6 +506,7 @@ final class VoiceCredentialModel: ObservableObject {
     func preload() {
         VoiceCredentialStore.preload { [weak self] in
             self?.refresh()
+            self?.geminiConnection = .idle
             self?.openAIConnection = .idle
             self?.deepSeekConnection = .idle
             self?.onCredentialsChanged?()
@@ -548,8 +557,8 @@ final class VoiceCredentialModel: ObservableObject {
 
     func test(_ kind: VoiceCredentialKind) {
         guard let key = VoiceCredentialStore.read(kind) else {
-            let message = kind == .openAI
-                ? VoiceAPIError.missingOpenAIKeyMessage
+            let message = kind == .gemini
+                ? VoiceAPIError.missingGeminiKeyMessage
                 : L("API Key is missing · add it in Settings → Voice")
             setConnection(.invalid(message), for: kind)
             return
@@ -558,6 +567,8 @@ final class VoiceCredentialModel: ObservableObject {
 
         let endpoint: URL
         switch kind {
+        case .gemini:
+            endpoint = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-transcribe")!
         case .openAI:
             endpoint = URL(string: "https://api.openai.com/v1/models/gpt-transcribe")!
         case .deepSeek:
@@ -566,7 +577,11 @@ final class VoiceCredentialModel: ObservableObject {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "GET"
         request.timeoutInterval = 12
-        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        if kind == .gemini {
+            request.setValue(key, forHTTPHeaderField: "x-goog-api-key")
+        } else {
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
 
         session.dataTask(with: request) { [weak self] data, response, error in
             let result: VoiceCredentialConnectionState
@@ -586,6 +601,7 @@ final class VoiceCredentialModel: ObservableObject {
     private func setConnection(_ state: VoiceCredentialConnectionState,
                                for kind: VoiceCredentialKind) {
         switch kind {
+        case .gemini: geminiConnection = state
         case .openAI: openAIConnection = state
         case .deepSeek: deepSeekConnection = state
         }
@@ -593,6 +609,9 @@ final class VoiceCredentialModel: ObservableObject {
 }
 
 enum VoiceAPIError {
+    static var missingGeminiKeyMessage: String {
+        L("Gemini API Key is missing · add and test it in Settings → Voice")
+    }
     static var missingOpenAIKeyMessage: String {
         L("OpenAI API Key is missing · add and test it in Settings → Voice")
     }
@@ -608,7 +627,7 @@ enum VoiceAPIError {
         if let voice = error as? VoiceTranscriptionError {
             switch voice {
             case .missingCredential:
-                return missingOpenAIKeyMessage
+                return missingGeminiKeyMessage
             case .invalidAudio:
                 return L("No usable speech · speak for at least one second and try again")
             case .invalidResponse:
@@ -651,17 +670,20 @@ enum VoiceAPIError {
 
     private static func classifiedMessage(raw: String?, statusCode: Int?) -> String {
         let value = raw?.lowercased() ?? ""
-        if statusCode == 401 || statusCode == 403
+        if statusCode == 401 || value.contains("api_key_invalid")
             || value.contains("invalid_api_key") || value.contains("incorrect api key")
             || value.contains("authentication") || value.contains("unauthorized") {
             return L("API Key is invalid · replace and test it in Settings → Voice")
+        }
+        if statusCode == 403 || value.contains("permission_denied") {
+            return L("Voice API access is denied · check project permissions and API availability")
         }
         if statusCode == 429 || value.contains("insufficient_quota")
             || value.contains("quota") || value.contains("rate limit")
             || value.contains("billing") {
             return L("API quota is unavailable or rate-limited · check the account")
         }
-        if value.contains("model_not_found") || value.contains("unsupported model")
+        if statusCode == 404 || value.contains("model_not_found") || value.contains("unsupported model")
             || value.contains("invalid model") || value.contains("model does not exist") {
             return L("Selected Voice model is unavailable · change it in Settings → Voice")
         }

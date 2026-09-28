@@ -89,8 +89,8 @@
       "activeMode": "final", // external | final | streaming
       "outputMode": "final", // legacy downgrade compatibility
       "layerModes": {}, // deprecated compatibility; activeMode is authoritative
-      "finalModel": "gpt-transcribe",
-      "streamingModel": "gpt-live-transcribe",
+      "finalModel": "gemini-3.5-transcribe",
+      "streamingModel": "gemini-3.5-transcribe-live",
       "languageHints": ["zh", "en"],
       "cleanupProvider": "deepseek",
       "selectionEditingEnabled": true,
