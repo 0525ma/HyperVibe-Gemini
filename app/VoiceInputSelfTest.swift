@@ -843,6 +843,13 @@ enum VoiceInputSelfTest {
         expect(audioEnvelope?["mimeType"] as? String == "audio/pcm;rate=24000"
                && roundTrippedAudio == appendProbe, "Realtime audio envelope round-trips")
 
+        let geminiTranscription = Data(
+            #"{"candidates":[{"content":{"parts":[{"audioTranscription":{"text":"这是一段语音转写测试。"}}]}}]}"#.utf8
+        )
+        expect((try? VoiceTranscriptionClient.transcript(from: geminiTranscription))
+               == "这是一段语音转写测试。",
+               "Gemini dedicated transcription reads audioTranscription.text")
+
         let realtimePacket = Data(repeating: 0x5A, count: 960) // one 20 ms PCM16 packet
         let packetStarted = DispatchTime.now().uptimeNanoseconds
         var packetBytes = 0

@@ -86,14 +86,25 @@ final class VoiceTranscriptionClient {
 
         let (data, response) = try await session.data(for: request)
         try Self.validate(response: response, data: data)
+        return try Self.transcript(from: data)
+    }
+
+    static func transcript(from data: Data) throws -> String {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let candidates = root["candidates"] as? [[String: Any]],
               let content = candidates.first?["content"] as? [String: Any],
               let parts = content["parts"] as? [[String: Any]] else {
             throw VoiceTranscriptionError.invalidResponse
         }
-        let text = parts.compactMap { $0["text"] as? String }.joined()
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = parts.compactMap { part -> String? in
+            if let transcription = part["audioTranscription"] as? [String: Any],
+               let text = transcription["text"] as? String {
+                return text
+            }
+            return part["text"] as? String
+        }.joined().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { throw VoiceTranscriptionError.invalidResponse }
+        return text
     }
 
     func openRealtime(
